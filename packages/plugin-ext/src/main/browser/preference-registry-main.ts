@@ -73,14 +73,14 @@ export class PreferenceRegistryMainImpl implements PreferenceRegistryMain {
     }
 
     // tslint:disable-next-line:no-any
-    $updateConfigurationOption(target: boolean | ConfigurationTarget | undefined, key: string, value: any, resource?: string): PromiseLike<void> {
+    async $updateConfigurationOption(target: boolean | ConfigurationTarget | undefined, key: string, value: any, resource?: string): Promise<void> {
         const scope = this.parseConfigurationTarget(target);
-        return this.preferenceService.set(key, value, scope, resource);
+        await this.preferenceService.set(key, value, scope, resource);
     }
 
-    $removeConfigurationOption(target: boolean | ConfigurationTarget | undefined, key: string, resource?: string): PromiseLike<void> {
+    async $removeConfigurationOption(target: boolean | ConfigurationTarget | undefined, key: string, resource?: string): Promise<void> {
         const scope = this.parseConfigurationTarget(target);
-        return this.preferenceService.set(key, undefined, scope, resource);
+        await this.preferenceService.set(key, undefined, scope, resource);
     }
 
     private parseConfigurationTarget(arg?: boolean | ConfigurationTarget): PreferenceScope {

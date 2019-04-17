@@ -397,7 +397,6 @@ export class DebugFrontendApplicationContribution extends AbstractViewContributi
             }
         });
 
-        this.schemaUpdater.update();
         this.configurations.load();
         await this.breakpointManager.load();
     }

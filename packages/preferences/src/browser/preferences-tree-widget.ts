@@ -313,7 +313,7 @@ export class PreferencesEditorsContainer extends DockPanel {
     }
 
     protected async getUserPreferenceEditorWidget(): Promise<PreferencesEditorWidget> {
-        const userPreferenceUri = this.userPreferenceProvider.getUri();
+        const userPreferenceUri = this.userPreferenceProvider.getConfigUri();
         const userPreferences = await this.editorManager.getOrCreateByUri(userPreferenceUri) as PreferencesEditorWidget;
         userPreferences.title.label = 'User';
         userPreferences.title.caption = `User Preferences: ${await this.getPreferenceEditorCaption(userPreferenceUri)}`;
@@ -335,7 +335,7 @@ export class PreferencesEditorsContainer extends DockPanel {
     }
 
     protected async getWorkspacePreferenceEditorWidget(): Promise<PreferencesEditorWidget | undefined> {
-        const workspacePreferenceUri = await this.workspacePreferenceProvider.getUri();
+        const workspacePreferenceUri = this.workspacePreferenceProvider.getConfigUri();
         const workspacePreferences = workspacePreferenceUri && await this.editorManager.getOrCreateByUri(workspacePreferenceUri) as PreferencesEditorWidget;
 
         if (workspacePreferences) {

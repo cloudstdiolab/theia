@@ -17,7 +17,7 @@
 // tslint:disable:no-any
 
 import { injectable, inject, postConstruct } from 'inversify';
-import { JSONExt } from '@phosphor/coreutils';
+import { JSONExt, JSONValue } from '@phosphor/coreutils/lib/json';
 import { FrontendApplicationContribution } from '../../browser';
 import { Event, Emitter, DisposableCollection, Disposable, deepFreeze } from '../../common';
 import { Deferred } from '../../common/promise-util';
@@ -25,6 +25,7 @@ import { PreferenceProvider, PreferenceProviderDataChange, PreferenceProviderDat
 import { PreferenceSchemaProvider, OverridePreferenceName } from './preference-contribution';
 import URI from '../../common/uri';
 import { PreferenceScope } from './preference-scope';
+import { PreferenceConfigurations } from './preference-configurations';
 
 export { PreferenceScope };
 
@@ -37,8 +38,7 @@ export interface PreferenceChange {
 
 export class PreferenceChangeImpl implements PreferenceChange {
     constructor(
-        private change: PreferenceProviderDataChange,
-        private providers: Map<PreferenceScope, PreferenceProvider>
+        private change: PreferenceProviderDataChange
     ) { }
 
     get preferenceName() {
@@ -51,33 +51,21 @@ export class PreferenceChangeImpl implements PreferenceChange {
         return this.change.oldValue;
     }
 
+    // TODO add tests
     affects(resourceUri?: string): boolean {
-        if (this.change.domain && resourceUri &&
-            this.change.domain.length !== 0 &&
-            this.change.domain.map(uriStr => new URI(uriStr))
-                .every(folderUri => folderUri.path.relativity(new URI(resourceUri).path) < 0)
-        ) {
-            return false;
-        }
-        for (const [scope, provider] of this.providers.entries()) {
-            if (!resourceUri && scope === PreferenceScope.Folder) {
-                continue;
-            }
-            const providerInfo = provider.canProvide(this.preferenceName, resourceUri);
-            const priority = providerInfo.priority;
-            if (priority >= 0 && scope > this.change.scope) {
-                return false;
-            }
-            if (scope === this.change.scope && this.change.domain.some(d => providerInfo.provider.getDomain().findIndex(pd => pd === d) < 0)) {
-                return false;
-            }
-        }
-        return true;
+        const resourcePath = resourceUri && new URI(resourceUri).path;
+        const domain = this.change.domain;
+        return !resourcePath || !domain || domain.some(uri => new URI(uri).path.relativity(resourcePath) >= 0);
     }
 }
 
 export interface PreferenceChanges {
     [preferenceName: string]: PreferenceChange
+}
+
+export interface PreferenceResolveResult<T> {
+    configUri?: URI
+    value?: T
 }
 
 export const PreferenceService = Symbol('PreferenceService');
@@ -87,11 +75,21 @@ export interface PreferenceService extends Disposable {
     get<T>(preferenceName: string, defaultValue: T): T;
     get<T>(preferenceName: string, defaultValue: T, resourceUri: string): T;
     get<T>(preferenceName: string, defaultValue?: T, resourceUri?: string): T | undefined;
-    set(preferenceName: string, value: any, scope?: PreferenceScope, resourceUri?: string): Promise<void>;
+    set(preferenceName: string, value: any, scope?: PreferenceScope, resourceUri?: string): Promise<boolean>;
     onPreferenceChanged: Event<PreferenceChange>;
+
+    inspect<T>(preferenceName: string, resourceUri?: string): {
+        preferenceName: string,
+        defaultValue: T | undefined,
+        globalValue: T | undefined, // User Preference
+        workspaceValue: T | undefined, // Workspace Preference
+        workspaceFolderValue: T | undefined // Folder Preference
+    } | undefined;
 
     overridePreferenceName(options: OverridePreferenceName): string;
     overridenPreferenceName(preferenceName: string): OverridePreferenceName | undefined;
+
+    resolve<T>(preferenceName: string, defaultValue?: T, resourceUri?: string): PreferenceResolveResult<T>;
 }
 
 /**
@@ -118,6 +116,9 @@ export class PreferenceServiceImpl implements PreferenceService, FrontendApplica
     @inject(PreferenceProviderProvider)
     protected readonly providerProvider: PreferenceProviderProvider;
 
+    @inject(PreferenceConfigurations)
+    protected readonly configurations: PreferenceConfigurations;
+
     protected readonly providers: PreferenceProvider[] = [];
     protected providersMap: Map<PreferenceScope, PreferenceProvider> = new Map();
 
@@ -128,7 +129,7 @@ export class PreferenceServiceImpl implements PreferenceService, FrontendApplica
 
     @postConstruct()
     protected init(): void {
-        this.toDispose.push(Disposable.create(() => this._ready.reject()));
+        this.toDispose.push(Disposable.create(() => this._ready.reject(new Error('preference service is disposed'))));
         this.doSetProvider(PreferenceScope.Default, this.schema);
     }
 
@@ -177,7 +178,7 @@ export class PreferenceServiceImpl implements PreferenceService, FrontendApplica
         const changesToEmit: PreferenceChanges = {};
         const acceptChange = (change: PreferenceProviderDataChange) =>
             this.getAffectedPreferenceNames(change, preferenceName =>
-                changesToEmit[preferenceName] = new PreferenceChangeImpl({ ...change, preferenceName }, this.providersMap)
+                changesToEmit[preferenceName] = new PreferenceChangeImpl({ ...change, preferenceName })
             );
         if (changes) {
             for (const preferenceName of Object.keys(changes)) {
@@ -199,7 +200,7 @@ export class PreferenceServiceImpl implements PreferenceService, FrontendApplica
                         const provider = this.getProvider(scope);
                         if (provider) {
                             const value = provider.get(preferenceName);
-                            if (scope > change.scope && value !== undefined && value !== null) {
+                            if (scope > change.scope && value !== undefined) {
                                 // preference defined in a more specific scope
                                 break;
                             } else if (scope === change.scope) {
@@ -255,12 +256,8 @@ export class PreferenceServiceImpl implements PreferenceService, FrontendApplica
         this.toDispose.push(provider);
     }
 
-    protected getProvider(scope: PreferenceScope, preferenceName?: string, resourceUri?: string): PreferenceProvider | undefined {
-        const provider = this.providersMap.get(scope);
-        if (provider && (!preferenceName || provider.canProvide(preferenceName, resourceUri).priority >= 0)) {
-            return provider;
-        }
-        return undefined;
+    protected getProvider(scope: PreferenceScope): PreferenceProvider | undefined {
+        return this.providersMap.get(scope);
     }
 
     getPreferences(resourceUri?: string): { [key: string]: any } {
@@ -280,21 +277,36 @@ export class PreferenceServiceImpl implements PreferenceService, FrontendApplica
     get<T>(preferenceName: string, defaultValue: T, resourceUri: string): T;
     get<T>(preferenceName: string, defaultValue?: T, resourceUri?: string): T | undefined;
     get<T>(preferenceName: string, defaultValue?: T, resourceUri?: string): T | undefined {
-        const value = this.doGet(preferenceName, defaultValue, resourceUri);
-        if (value === null || value === undefined) {
-            const overriden = this.overridenPreferenceName(preferenceName);
-            if (overriden) {
-                return this.doGet(overriden.preferenceName, defaultValue, resourceUri);
-            }
-        }
-        return value;
+        return this.resolve<T>(preferenceName, defaultValue, resourceUri).value;
     }
 
-    async set(preferenceName: string, value: any, scope: PreferenceScope = PreferenceScope.User, resourceUri?: string): Promise<void> {
-        const provider = this.getProvider(scope);
-        if (provider) {
-            await provider.setPreference(preferenceName, value, resourceUri);
+    resolve<T>(preferenceName: string, defaultValue?: T, resourceUri?: string): {
+        configUri?: URI,
+        value?: T
+    } {
+        const { value, configUri } = this.doResolve(preferenceName, defaultValue, resourceUri);
+        if (value === undefined) {
+            const overriden = this.overridenPreferenceName(preferenceName);
+            if (overriden) {
+                return this.doResolve(overriden.preferenceName, defaultValue, resourceUri);
+            }
         }
+        return { value, configUri };
+    }
+
+    async set(preferenceName: string, value: any, scope: PreferenceScope | undefined, resourceUri?: string): Promise<boolean> {
+        const resolvedScope = scope !== undefined ? scope : (!resourceUri ? PreferenceScope.Workspace : PreferenceScope.Folder);
+        if (resolvedScope === PreferenceScope.Default) {
+            throw new Error('Unable to write to Default Settings.');
+        }
+        if (resolvedScope === PreferenceScope.User && this.configurations.isSectionName(preferenceName.split('.', 1)[0])) {
+            throw new Error(`Unable to write to User Settings because ${preferenceName} does not support for global scope.`);
+        }
+        if (resolvedScope === PreferenceScope.Folder && !resourceUri) {
+            throw new Error('Unable to write to Folder Settings because no resource is provided.');
+        }
+        const provider = this.getProvider(resolvedScope);
+        return !!provider && provider.setPreference(preferenceName, value, resourceUri);
     }
 
     getBoolean(preferenceName: string): boolean | undefined;
@@ -369,20 +381,50 @@ export class PreferenceServiceImpl implements PreferenceService, FrontendApplica
         return this.doGet(preferenceName, undefined, resourceUri) !== undefined;
     }
     protected doInspectInScope<T>(preferenceName: string, scope: PreferenceScope, resourceUri?: string): T | undefined {
-        const provider = this.getProvider(scope, preferenceName, resourceUri);
+        const provider = this.getProvider(scope);
         return provider && provider.get<T>(preferenceName, resourceUri);
     }
     protected doGet<T>(preferenceName: string, defaultValue?: T, resourceUri?: string): T | undefined {
-        for (const scope of PreferenceScope.getReversedScopes()) {
+        return this.doResolve(preferenceName, defaultValue, resourceUri).value;
+    }
+    protected doResolve<T>(preferenceName: string, defaultValue?: T, resourceUri?: string): PreferenceResolveResult<T> {
+        const result: PreferenceResolveResult<T> = {};
+        for (const scope of PreferenceScope.getScopes()) {
             if (this.schema.isValidInScope(preferenceName, scope)) {
-                const provider = this.getProvider(scope, preferenceName, resourceUri);
+                const provider = this.getProvider(scope);
                 if (provider) {
-                    const value = provider.get<T>(preferenceName, resourceUri);
-                    const result = value !== null && value !== undefined ? value : defaultValue;
-                    return deepFreeze(result);
+                    const { configUri, value } = provider.resolve<T>(preferenceName, resourceUri);
+                    if (value !== undefined) {
+                        result.configUri = configUri;
+                        result.value = this.merge(result.value as any, value as any) as any;
+                    }
                 }
             }
         }
+        return {
+            configUri: result.configUri,
+            value: result.value !== undefined ? deepFreeze(result.value) : defaultValue
+        };
+    }
+
+    protected merge(source: JSONValue | undefined, target: JSONValue): JSONValue {
+        if (source === undefined || !JSONExt.isObject(source)) {
+            return JSONExt.deepCopy(target);
+        }
+        if (JSONExt.isPrimitive(target)) {
+            return {};
+        }
+        for (const key of Object.keys(target)) {
+            const value = (target as any)[key];
+            if (key in source) {
+                if (JSONExt.isObject(source[key]) && JSONExt.isObject(value)) {
+                    this.merge(source[key], value);
+                    continue;
+                }
+            }
+            source[key] = JSONExt.deepCopy(value);
+        }
+        return source;
     }
 
 }
