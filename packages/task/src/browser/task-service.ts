@@ -154,9 +154,24 @@ export class TaskService implements TaskConfigurationClient {
     }
 
     addRecentTasks(tasks: TaskConfiguration | TaskConfiguration[]): void {
+        console.log('////////////////////// addRecentTasks ');
         if (Array.isArray(tasks)) {
+            console.log('/// addRecentTasks  === array ');
             tasks.forEach(task => this.addRecentTasks(task));
         } else {
+            console.log('/// addRecentTasks  === NOT array ' + JSON.stringify(tasks));
+            if ('_scope' in tasks) {
+                console.log('/// addRecentTasks  === scope YES ');
+            } else {
+                console.log('/// addRecentTasks  === scope NO ');
+            }
+
+            if ('_source' in tasks) {
+                console.log('/// addRecentTasks  === source YES ');
+            } else {
+                console.log('/// addRecentTasks  === source NO ');
+            }
+
             const ind = this.recentTasks.findIndex(recent => TaskConfiguration.equals(recent, tasks));
             if (ind >= 0) {
                 this.recentTasks.splice(ind, 1);

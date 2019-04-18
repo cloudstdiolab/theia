@@ -58,6 +58,7 @@ export class TaskServerImpl implements TaskServer {
         const task = await runner.run(taskConfiguration, ctx);
 
         task.onExit(event => {
+            console.log('************** theia core === task service === on exit');
             this.taskManager.delete(task);
             this.fireTaskExitedEvent(event);
         });

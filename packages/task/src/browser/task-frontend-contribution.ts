@@ -113,12 +113,27 @@ export class TaskFrontendContribution implements CommandContribution, MenuContri
         });
         this.schemaUpdater.update();
 
+        console.log('////////////////////// on start ');
         this.storageService.getData<{ recent: TaskConfiguration[] }>(TASKS_STORAGE_KEY, { recent: [] })
             .then(tasks => this.taskService.addRecentTasks(tasks.recent));
     }
 
     onStop(): void {
         const recent = this.taskService.getRecentTasks();
+        recent.forEach(task => {
+            if ('_scope' in task) {
+                console.log('/// save  === scope YES ');
+            } else {
+                console.log('/// save  === scope NO ');
+            }
+
+            if ('_source' in task) {
+                console.log('/// save  === source YES ');
+            } else {
+                console.log('/// save  === source NO ');
+            }
+        });
+
         this.storageService.setData<{ recent: TaskConfiguration[] }>(TASKS_STORAGE_KEY, { recent });
     }
 
